@@ -2,51 +2,71 @@
 set -euo pipefail
 
 # ----------------- CONFIG -----------------
-DL="${DL:-$HOME/Downloads/nvidia/sdkm_downloads}"   # where you downloaded files
-WORK="${WORK:-$HOME/l4t}"                            # workspace (will create)
-OUT="${OUT:-$HOME/jetpack-6.0-aarch64.tar.zst}"      # output sysroot tarball
+JETSON_FORGE_DL="${JETSON_FORGE_DL:-$HOME/Downloads/nvidia/sdkm_downloads}"
+JETSON_FORGE_WORK="${JETSON_FORGE_WORK:-$HOME/l4t}"
+JETSON_FORGE_OUT="${JETSON_FORGE_OUT:-$HOME/jetpack-aarch64.tar.zst}"
 
-JETSON_LINUX_TBZ="${JETSON_LINUX_TBZ:-$DL/Jetson_Linux_R36.3.0_aarch64.tbz2}"
-SAMPLE_ROOTFS_TBZ="${SAMPLE_ROOTFS_TBZ:-$DL/Tegra_Linux_Sample-Root-Filesystem_R36.3.0_aarch64.tbz2}"
+# Helper: safely get the newest file matching a pattern, or empty string if none
+get_latest() {
+  local pattern="$1"
+  local file
+  file=$(ls -1v "$JETSON_FORGE_DL"/$pattern 2>/dev/null | tail -n1 || true)
+  echo "$file"
+}
 
-CUDA_LOCAL_REPO_DEB="${CUDA_LOCAL_REPO_DEB:-$DL/cuda-tegra-repo-ubuntu2204-12-2-local_12.2.12-1_arm64.deb}"
-CUDNN_LOCAL_REPO_DEB="${CUDNN_LOCAL_REPO_DEB:-$DL/cudnn-local-tegra-repo-ubuntu2204-8.9.4.25_1.0-1_arm64.deb}"
-TRT_LOCAL_REPO_DEB="${TRT_LOCAL_REPO_DEB:-$DL/nv-tensorrt-local-repo-l4t-8.6.2-cuda-12.2_1.0-1_arm64.deb}"
+# ----------------- CORE FILES -----------------
+JETSON_LINUX_TBZ="$(get_latest 'Jetson_Linux_R*_aarch64.tbz2')"
+SAMPLE_ROOTFS_TBZ="$(get_latest 'Tegra_Linux_Sample-Root-Filesystem_R*_aarch64.tbz2')"
+CUDA_LOCAL_REPO_DEB="$(get_latest 'cuda-tegra-repo-ubuntu*_arm64.deb')"
+CUDNN_LOCAL_REPO_DEB="$(get_latest 'cudnn-local-tegra-repo-ubuntu*_arm64.deb')"
+TRT_LOCAL_REPO_DEB="$(get_latest 'nv-tensorrt-local-repo-l4t-*_arm64.deb')"
 
-EXTRA_ARM64_DEBS=(
-  "$DL/nvidia-l4t-gstreamer_36.3.0-20240506102626_arm64.deb"
-  "$DL/nvidia-l4t-jetson-multimedia-api_36.3.0-20240506102626_arm64.deb"
-  "$DL/OpenCV-4.8.0-1-g6371ee1-aarch64-libs.deb"
-  "$DL/libnvidia-container1_1.14.2-1_arm64.deb"
-  "$DL/libnvidia-container-tools_1.14.2-1_arm64.deb"
-  "$DL/nvidia-container-toolkit-base_1.14.2-1_arm64.deb"
-  "$DL/nvidia-container-toolkit_1.14.2-1_arm64.deb"
-  "$DL/nvidia-l4t-dla-compiler_36.3.0-20240506102626_arm64.deb"
-  "$DL/cupva-2.5.1-l4t.deb"
-  "$DL/pva-allow-1.0.0.deb"
-)
+for var in JETSON_LINUX_TBZ SAMPLE_ROOTFS_TBZ CUDA_LOCAL_REPO_DEB CUDNN_LOCAL_REPO_DEB TRT_LOCAL_REPO_DEB; do
+  if [[ -z "${!var}" ]]; then
+    echo "ERROR: Required file for $var not found in $JETSON_FORGE_DL"
+    exit 1
+  fi
+done
 
-# ----------------- PREP -----------------
-echo "==> Reset workspace (owned by user)"
-sudo rm -rf "$WORK"
-mkdir -p "$WORK"
-cd "$WORK"
+# ----------------- EXTRA PACKAGES -----------------
+EXTRA_ARM64_DEBS=()
+while IFS= read -r -d '' f; do
+  case "$f" in
+    "$JETSON_LINUX_TBZ" | "$SAMPLE_ROOTFS_TBZ" | \
+    "$CUDA_LOCAL_REPO_DEB" | "$CUDNN_LOCAL_REPO_DEB" | "$TRT_LOCAL_REPO_DEB")
+      ;;
+    *)
+      EXTRA_ARM64_DEBS+=("$f")
+      ;;
+  esac
+done < <(find "$JETSON_FORGE_DL" -maxdepth 1 -type f -name '*.deb' -print0 | sort -zV)
+
+# ----------------- SUMMARY -----------------
+echo "Resolved artifacts:"
+echo "  JETSON_LINUX_TBZ     = ${JETSON_LINUX_TBZ:-<missing>}"
+echo "  SAMPLE_ROOTFS_TBZ    = ${SAMPLE_ROOTFS_TBZ:-<missing>}"
+echo "  CUDA_LOCAL_REPO_DEB  = ${CUDA_LOCAL_REPO_DEB:-<missing>}"
+echo "  CUDNN_LOCAL_REPO_DEB = ${CUDNN_LOCAL_REPO_DEB:-<missing>}"
+echo "  TRT_LOCAL_REPO_DEB   = ${TRT_LOCAL_REPO_DEB:-<missing>}"
+printf '  EXTRA_ARM64_DEBS (%d items):\n' "${#EXTRA_ARM64_DEBS[@]}"
+printf '    - %s\n' "${EXTRA_ARM64_DEBS[@]}"
+
 
 # Extract Jetson_Linux as USER (keeps ownership = you)
 echo "==> Extracting Jetson Linux package (user)"
-tar -xjf "$JETSON_LINUX_TBZ"   # creates Linux_for_Tegra/
+tar -xjf "$JETSON_LINUX_TBZ" -C "$JETSON_FORGE_WORK"   # creates Linux_for_Tegra/
 
 # Extract Sample RootFS into rootfs as ROOT (needs root perms there)
 echo "==> Extracting Sample RootFS (sudo)"
-sudo tar -xjf "$SAMPLE_ROOTFS_TBZ" -C Linux_for_Tegra/rootfs
+sudo tar -xjf "$SAMPLE_ROOTFS_TBZ" -C "$JETSON_FORGE_WORK/Linux_for_Tegra/rootfs"
 
-cd Linux_for_Tegra
+cd "$JETSON_FORGE_WORK/Linux_for_Tegra"
 
 # Apply BSP binaries as ROOT
 echo "==> Applying BSP binaries (sudo)"
 sudo ./apply_binaries.sh
 
-ROOT="$WORK/Linux_for_Tegra/rootfs"
+ROOT="$JETSON_FORGE_WORK/Linux_for_Tegra/rootfs"
 STATUS="$ROOT/var/lib/dpkg/status"
 sudo mkdir -p "$(dirname "$STATUS")"
 sudo touch "$STATUS"
@@ -80,7 +100,6 @@ extract_local_repo_and_install_pool() {
 }
 
 # ----------------- INSTALL NVIDIA STACK -----------------
-echo "==> Installing TensorRT 8.6.2.3, cuDNN 8.9.4.25, CUDA 12.2 from local repos (sudo)"
 extract_local_repo_and_install_pool "$TRT_LOCAL_REPO_DEB"
 extract_local_repo_and_install_pool "$CUDNN_LOCAL_REPO_DEB"
 extract_local_repo_and_install_pool "$CUDA_LOCAL_REPO_DEB"
@@ -90,23 +109,25 @@ for deb in "${EXTRA_ARM64_DEBS[@]}"; do
   [[ -f "$deb" ]] && install_deb_into_rootfs "$deb" || true
 done
 
+echo "==> Ensuring /usr/local/cuda symlink"
+cuda_version=$(ls "$JETSON_FORGE_DL"/cuda-repo-ubuntu*-local_*_*.deb 2>/dev/null | sort -V | tail -1 | sed -E 's/.*ubuntu[0-9]+-([0-9]+)-([0-9]+)-local_.*/\1.\2/')
+[ -n "$cuda_version" ] && sudo ln -sfn "cuda-$cuda_version" "$ROOT/usr/local/cuda"
+
 # Ensure /usr/local/cuda symlink exists inside sysroot (helps CMake find CUDA)
-echo "==> Ensuring /usr/local/cuda symlink → cuda-12.2 (sudo)"
-if sudo test -d "$ROOT/usr/local/cuda-12.2" && ! sudo test -e "$ROOT/usr/local/cuda"; then
-  sudo ln -s cuda-12.2 "$ROOT/usr/local/cuda"
+if sudo test -d "$ROOT/usr/local/cuda-$cuda_version" && ! sudo test -e "$ROOT/usr/local/cuda"; then
+  sudo ln -s "cuda-$cuda_version" "$ROOT/usr/local/cuda"
 fi
 
-# Optional sanity check (no fail on missing file)
 echo "==> CUDA version.json (if present):"
 sudo bash -lc 'test -f "'"$ROOT"'/usr/local/cuda/version.json" && cat "'"$ROOT"'/usr/local/cuda/version.json" || echo "CUDA version.json not found"'
 
 # ----------------- PACKAGE SYSROOT -----------------
-echo "==> Packaging sysroot (sudo, numeric owners) → $OUT"
-#sudo tar -C "$ROOT" --numeric-owner -I 'zstd -19' -cpf "$OUT" .
+echo "==> Packaging sysroot (sudo, numeric owners) → $JETSON_FORGE_OUT"
+#sudo tar -C "$ROOT" --numeric-owner -I 'zstd -19' -cpf "$JETSON_FORGE_OUT" .
 # Zip with progress bar
 sudo bash -c "
   cd '$ROOT' &&
-  tar -cf - --numeric-owner . | pv -s \$(du -sb . | awk '{print \$1}') | zstd -19 -T0 -o '$OUT'
+  tar -cf - --numeric-owner . | pv -s \$(du -sb . | awk '{print \$1}') | zstd -19 -T0 -o '$JETSON_FORGE_OUT'
 "
 
-echo "==> Done. Sysroot: $OUT"
+echo "==> Done. Sysroot: $JETSON_FORGE_OUT"
