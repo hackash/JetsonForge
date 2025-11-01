@@ -1,0 +1,19 @@
+
+# Build artifacts
+build/
+dist/
+*.o
+*.so
+*.a
+*.pyc
+__pycache__/
+
+# Sysroots and archives (proprietary NVIDIA bits not in repo)
+sysroots/*.tar.zst
+sysroots/*.tar.xz
+sysroots/*.tar.gz
+
+# Editor/OS
+.DS_Store
+.idea/
+.vscode/
