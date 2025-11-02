@@ -1,7 +1,7 @@
-# x86_64 cross-compile builder for JetPack 6.0 (CUDA 12.2, cuDNN 8.9.4, TRT 8.6.2)
 FROM ubuntu:22.04
 
 ARG DEBIAN_FRONTEND=noninteractive
+ARG TAR_ZST_NAME
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake ninja-build git ccache \
@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 # ---- Sysroot (exact copy of Jetson userland) ----
-COPY sysroots/jetpack-6.0-aarch64.tar.zst /tmp/sysroot.tar.zst
+COPY sysroots/${TAR_ZST_NAME} /tmp/sysroot.tar.zst
 RUN mkdir -p /opt/jetson-sysroot \
  && unzstd -c /tmp/sysroot.tar.zst | tar -x -C /opt/jetson-sysroot --strip-components=1 \
  && rm -f /tmp/sysroot.tar.zst

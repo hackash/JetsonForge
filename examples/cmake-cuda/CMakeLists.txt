@@ -7,7 +7,7 @@ set(CMAKE_BUILD_TYPE Release)
 # ---- Sysroot from env (set by your cross image) ----
 set(_SYSROOT $ENV{SYSROOT})
 
-# ---- Candidate paths for CUDA (JetPack 6 uses one of these layouts) ----
+# ---- Candidate paths for CUDA ----
 set(_CUDA_INC_CAND
   "${_SYSROOT}/usr/local/cuda/include"
   "${_SYSROOT}/usr/local/cuda/targets/aarch64-linux/include"

@@ -55,7 +55,7 @@ sdkmanager --cli --action downloadonly --download-folder ~/jetpack-r36.3.0 --log
 
 NOTE that above command will download all libraries that come by default with Jetpack SDK, if you want to be selective, run `sdkmanager` and follow instructions to download only whats needed
 
-Once download is complete, Install required packages: 
+Once download is complete, install required packages: 
 
 ```bash
 sudo apt update
@@ -75,105 +75,54 @@ export JETSON_FORGE_OUT=/home/ubuntu/workspace/jetpack-6.0-aarch64.tar.zst
 ./make-sys-root.sh
 ```
 
-3. **Place the Sysroot Tarball**
-   - Copy your sysroot tarball to `sysroots/jetpack-6.0-aarch64.tar.zst` in this repository.
+This command will create jetpack-6.0-aarch64.tar.zst under `JETSON_FORGE_OUT` directory, copy that to JetsonForge repo: 
 
-4. **Build the Cross-Compilation Docker Image**
-   - Run:
-     ```bash
-     docker build --network host -t cross:latest -f docker/x86-cross/Dockerfile .
-     ```
+```bash 
+cp /home/ubuntu/workspace/jetpack-6.0-aarch64.tar.zst JetsonForge/sysroots
+```
 
-5. **Build Example Project or Your Own Code**
-   - Use the cross-compilation image to build aarch64 binaries:
-     ```bash
-     docker run --rm -it -v $(pwd):/work cross:latest bash -lc 'cd examples && ./build.sh'
-     ```
+Navigate to root of JetsonForge repository `cd JetsonForge` and build base docker image:
 
-6. **Package and Deploy**
-   - Use multi-stage Docker builds or copy the built binaries to your Jetson device for deployment.
+```bash
+docker build --network host --build-arg TAR_ZST_NAME=jetpack-6.0-aarch64.tar.zst -t l4t-cross-base:r36.3.0 -f docker/x86-cross/Dockerfile .
+```
 
-Refer to the scripts and example projects in this repository for more details and customization options.
+NOTE: replace image name with your own: e.g [your org]/l4t-cross:36.3.0
 
+At this point `l4t-cross-base:r36.3.0` is fully build compatible jetson base container, similar to what you would have on real device with a fresh installed Jetpack 6.0, we can use this to build our software which will later run on real device, to test, build example app:
 
+```bash
+docker build --network host --build-arg L4T_CROSS_BASE=l4t-cross-base:r36.3.0  --build-arg TARGET_JETPACK_TAG=r36.3.0 -t l4t-cross-example-app:r36.3.0-latest -f examples/cmake-cuda/Dockerfile examples/cmake-cuda
+```
 
-# Jetson Virtual Build Environment (JP 6.0 • CUDA 12.2 • cuDNN 8.9.4 • TensorRT 8.6.2)
+At this point `l4t-cross-example-app:36.3.0-latest` is ready software image that can run on real jetson device like Orin Nano 8GB with Jetpack 6.0, to test, push your image to dockerhub and then pull to your device, once ready you can run with the following command: 
 
-This repo scaffolds a **fast x86 builder image** that cross-compiles for **aarch64 Jetson (Orin)** without needing physical hardware.  
-It targets **JetPack 6.0** with the following library expectations in the **sysroot**:
+```bash 
+docker run -it --rm --runtime nvidia l4t-cross-example-app:r36.3.0-latest
+```
 
-- `cuda-12.2`
-- `libcudnn8=8.9.4.25-1+cuda12.2`
-- `libcudnn8-dev=8.9.4.25-1+cuda12.2`
-- `libnvinfer8=8.6.2.3-1+cuda12.2`
-- `libnvinfer-dev=8.6.2.3-1+cuda12.2`
+You should see similar output: 
 
-> ⚠️ **NVIDIA licensing:** This project does **not** redistribute NVIDIA binaries.  
-> You must provide a **sysroot tarball** built from your own JetPack 6.0/L4T environment.  
-> Place it at: `sysroots/jetpack-6.0-aarch64.tar.zst` before building the image.
+```bash 
+Detected 1 CUDA device(s)
 
----
+Device 0: Orin
+  Compute capability: 8.7
+  Total global memory: 7621 MB
+  Multiprocessors: 8
+  Max threads per block: 1024
+  Clock rate: 624 MHz
+```
 
-## Quick Start
-
-1) **Create a sysroot tarball** for JetPack 6.0 (L4T R36.x) that contains:
-   - `/usr/local/cuda` (CUDA 12.2)
-   - cuDNN 8.9.4.25 packages (runtime + dev)
-   - TensorRT 8.6.2.3 packages (runtime + dev)
-   - `/lib` and `/usr/lib/aarch64-linux-gnu` with matching glibc/Ubuntu 22.04
-   - `/usr/include` (headers), `/var/lib/dpkg/status` (for version checks)
-
-   See `scripts/prepare-sysroot-jp6.sh` for guidance.
-
-2) **Build the x86 cross builder image**:
-   ```bash
-   docker build --network host -t cross:latest -f docker/x86-cross/Dockerfile .
-   ```
-
-3) **Build the example project (aarch64 artifacts)**:
-   ```bash
-   docker run --rm -it -v $(pwd):/work ghcr.io/YOUR_ORG/jetson-cross:jp6.0-cuda12.2      bash -lc 'cd examples/cmake-cuda && ./build.sh'
-   ```
-
-4) **Package your app** using a multi-stage Dockerfile with `docker buildx` to produce an `arm64` image for Jetson.
-
----
+Congratulations! You successfully built example app on x86_64 machine without Nvidia GPU and ran on real Jetson device with real GPU!
 
 ## What’s inside
 
 - `docker/x86-cross/Dockerfile` – x86_64 builder with aarch64 toolchain and your JP6 sysroot
 - `toolchains/aarch64-jetson.cmake` – CMake toolchain file for cross-compiles
-- `examples/cmake-cuda/` – Minimal CUDA example + build script
+- `examples/cmake-cuda/` – Minimal CUDA example + Dockerfile
 - `scripts/verify-sysroot.sh` – Sanity checks for CUDA/cuDNN/TensorRT versions in the sysroot
 - `.github/workflows/build-cross.yml` – Example CI pipeline (customize/publish as you wish)
-
----
-
-## Example multi-stage packaging (arm64 runtime)
-
-After building aarch64 artifacts with the cross image, you can produce a final Jetson runtime image like this:
-
-```Dockerfile
-# ---- Stage 1: build (x86 cross)
-FROM ghcr.io/YOUR_ORG/jetson-cross:jp6.0-cuda12.2 AS builder
-WORKDIR /src
-COPY . .
-RUN cmake -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=/toolchains/aarch64-jetson.cmake \
- && cmake --build build -j$(nproc)
-
-# ---- Stage 2: runtime (arm64 Jetson/L4T)
-FROM nvcr.io/nvidia/l4t-base:36.3.0
-WORKDIR /app
-COPY --from=builder /src/build/mybin /app/mybin
-ENTRYPOINT ["/app/mybin"]
-```
-
-Build on x86 with Buildx:
-```bash
-docker buildx build --platform=linux/arm64 -t your/app:jetson .
-```
-
----
 
 ## Notes / Gotchas
 
