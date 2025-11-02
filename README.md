@@ -211,7 +211,7 @@ This project is licensed under the [MIT License](LICENSE).
 ### ❤️ Contributing
 
 Pull requests and improvements are always welcome!  
-If you find bugs or want to suggest enhancements, open an issue on [GitHub](https://github.com/hackash/JetsonForge).
+If you find bugs or want to suggest enhancements, open an issue on [GitHub](https://github.com/hackash/JetsonForge/issues).
 
 ---
 
@@ -221,4 +221,4 @@ For setup questions or contribution discussions, reach out via GitHub Issues or 
 
 ---
 
-> © 2025 JetsonForge — Empowering Jetson developers everywhere.
+❤️ Happy Vibe Coding!
