@@ -1,26 +1,7 @@
 # 🚀 JetsonForge
 
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Build Status](https://img.shields.io/github/actions/workflow/status/hackash/JetsonForge/build-cross.yml?label=CI%20Build)](https://github.com/hackash/JetsonForge/actions)
-[![Platform](https://img.shields.io/badge/platform-x86__64%20%7C%20Jetson-blue)](#)
 [![Docker](https://img.shields.io/badge/docker-ready-brightgreen)](#)
-
----
-
-## 📘 Table of Contents
-
-1. [Introduction](#introduction)
-2. [Prerequisites](#prerequisites)
-3. [Getting Started](#getting-started)
-   - [1. Install Prerequisites](#1-install-prerequisites)
-   - [2. Download JetPack and L4T Files](#2-download-jetpack-and-l4t-files)
-   - [3. Install Required Packages](#3-install-required-packages)
-   - [4. Clone JetsonForge Repository](#4-clone-jetsonforge-repository)
-   - [5. Build the Base Docker Image](#5-build-the-base-docker-image)
-   - [6. Build and Test an Example Application](#6-build-and-test-an-example-application)
-4. [What’s Inside](#whats-inside)
-5. [Notes and Gotchas](#notes-and-gotchas)
-6. [License](#license)
 
 ---
 
@@ -43,7 +24,7 @@ Before you begin, ensure you have the following installed:
 - **NVIDIA Developer Account** — required to access JetPack/L4T downloads  
 - **NVIDIA SDK Manager** — for downloading JetPack and preparing the sysroot  
 - **Docker** — installed and configured  
-- **20 GB+ of free disk space** — for images, SDKs, and sysroot data  
+- **~60 GB+ of free disk space** — for images, SDKs, and sysroot data  
 
 **Optional (but recommended):**
 - Basic knowledge of Docker, cross-compilation, and CMake
