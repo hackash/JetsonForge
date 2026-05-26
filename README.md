@@ -171,7 +171,6 @@ You’ve cross-compiled a CUDA app on an x86_64 host (no GPU required) and execu
 | `toolchains/aarch64-jetson.cmake` | CMake toolchain configuration for cross-compiling |
 | `examples/cmake-cuda/` | Minimal CUDA example and Dockerfile |
 | `scripts/verify-sysroot.sh` | Verifies CUDA/cuDNN/TensorRT compatibility in the sysroot |
-| `.github/workflows/build-cross.yml` | Example GitHub Actions CI pipeline |
 
 ---
 
