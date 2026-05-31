@@ -16,6 +16,29 @@ You can now build Jetson software **without owning a Jetson device**, enabling f
 
 ---
 
+## 🔄 Usage Options
+
+**JetsonForge** can be used in two ways:
+
+### 1. 🤖 GitHub Action (Recommended for CI/CD)
+Use JetsonForge directly in your GitHub Actions workflows with automatic caching and headless authentication.
+
+```yaml
+- uses: hackash/JetsonForge@main
+  with:
+    jetpack_version: '6.0'
+    jetson_target: 'JETSON_ORIN_NANO_TARGETS'
+    slack_webhook: ${{ secrets.SLACK_WEBHOOK }}
+```
+
+**📖 [Complete GitHub Action Documentation →](README-GHA.md)**  
+**🎯 [JetPack Version & Device Compatibility Guide →](JETPACK-VERSIONS.md)**
+
+### 2. 💻 Local/Manual Setup
+Follow the manual setup instructions below for local development or custom CI systems.
+
+---
+
 ## ⚙️ Prerequisites
 
 Before you begin, ensure you have the following installed:

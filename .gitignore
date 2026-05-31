@@ -1,4 +1,52 @@
+# IDE and Editor Files
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
+*.swp
+*.swo
+*~
+
+# Build Artifacts
+build/
+*.o
+*.a
+*.so
+*.so.*
+
+# Sysroot Archives (keep .gitignore file)
+sysroots/*
+!sysroots/.gitignore
+
+# JetPack Downloads and Work Directories
+jetpack-downloads/
+jetpack-work/
+Linux_for_Tegra/
+
+# NVIDIA SDK Manager Session Files
+.nvsdkm/
+.config/sdkmanager/
+
+# Temporary Files
+*.tmp
+*.log
+*.tar
+*.tar.gz
+*.tar.bz2
+*.tar.zst
+*.deb
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+env/
+
+# Docker
+.dockerignore
+
+# CI/CD Outputs
+.github/workflows/.artifacts/
+

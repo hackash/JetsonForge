@@ -1,0 +1,595 @@
+name: 'JetsonForge Cross-Compiler'
+description: 'Build NVIDIA Jetson cross-compilation Docker images with cached sysroots and SDK authentication'
+author: 'JetsonForge Contributors'
+
+branding:
+  icon: 'box'
+  color: 'green'
+
+inputs:
+  jetpack_version:
+    description: |
+      JetPack version to download and build. Examples: 6.0, 5.1.2, 4.6.4
+      Common versions: 6.0 (Orin), 5.1.2 (Xavier/Orin), 4.6.4 (Nano/TX2)
+      See JETPACK-VERSIONS.md for complete compatibility matrix
+    required: false
+    default: '6.0'
+  
+  jetson_target:
+    description: |
+      Target Jetson device identifier for SDK Manager.
+      Orin: JETSON_ORIN_NANO_TARGETS, JETSON_AGX_ORIN_TARGETS, JETSON_ORIN_NX_TARGETS
+      Xavier: JETSON_AGX_XAVIER_TARGETS, JETSON_XAVIER_NX_TARGETS
+      Legacy: JETSON_NANO_TARGETS, JETSON_TX2_TARGETS
+      See JETPACK-VERSIONS.md for device compatibility
+    required: false
+    default: 'JETSON_ORIN_NANO_TARGETS'
+  
+  slack_webhook:
+    description: 'Slack incoming webhook URL for authentication notifications (optional)'
+    required: false
+    default: ''
+  
+  teams_webhook:
+    description: 'Microsoft Teams incoming webhook URL for authentication notifications (optional)'
+    required: false
+    default: ''
+  
+  build_image_tag:
+    description: |
+      Docker image tag for the built cross-compilation base image.
+      If not specified, automatically generated as: jetson-cross-base:jp{VERSION}-{TARGET}
+      Example: jetson-cross-base:jp6.0-orin-nano
+      Custom example: my-registry.com/jetson-builder:v1.0
+    required: false
+    default: ''
+  
+  download_folder:
+    description: 'Directory where SDK Manager downloads JetPack files'
+    required: false
+    default: '~/jetpack-downloads'
+  
+  work_folder:
+    description: 'Working directory for building the sysroot'
+    required: false
+    default: '~/jetpack-work'
+  
+  sysroot_output:
+    description: 'Output path for the generated sysroot archive'
+    required: false
+    default: '~/jetpack-sysroot.tar.zst'
+  
+  auth_timeout:
+    description: 'Maximum time in seconds to wait for NVIDIA authentication (default: 300)'
+    required: false
+    default: '300'
+  
+  skip_authentication:
+    description: 'Skip SDK Manager authentication check (use if credentials are pre-configured)'
+    required: false
+    default: 'false'
+  
+  skip_sysroot_build:
+    description: 'Skip sysroot generation (use if sysroot is restored from cache or provided externally)'
+    required: false
+    default: 'false'
+  
+  cache_key_suffix:
+    description: 'Additional suffix for cache keys to force cache invalidation'
+    required: false
+    default: ''
+  
+  use_archived_versions:
+    description: |
+      Control SDK Manager --archived-versions flag for downloading older JetPack releases.
+      Options: 'auto' (smart detection), 'true' (always use), 'false' (never use)
+      Auto mode uses --archived-versions for JetPack < 6.0
+    required: false
+    default: 'auto'
+
+outputs:
+  docker_image:
+    description: 'Tag of the built Docker cross-compilation image'
+    value: ${{ steps.docker-build.outputs.image_tag }}
+  
+  sysroot_path:
+    description: 'Path to the generated sysroot archive'
+    value: ${{ steps.sysroot-build.outputs.sysroot_path }}
+  
+  cache_hit_session:
+    description: 'Whether SDK Manager session was restored from cache'
+    value: ${{ steps.cache-session.outputs.cache-hit }}
+  
+  cache_hit_sysroot:
+    description: 'Whether sysroot was restored from cache'
+    value: ${{ steps.cache-sysroot.outputs.cache-hit }}
+
+runs:
+  using: 'composite'
+  steps:
+    # ============================================================
+    # Step 1: Install Required System Dependencies
+    # ============================================================
+    - name: Install System Dependencies
+      shell: bash
+      run: |
+        echo "::group::Installing system dependencies"
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          bzip2 zstd xz-utils dpkg-dev qemu-user-static pv \
+          curl jq ca-certificates
+        echo "::endgroup::"
+    
+    # ============================================================
+    # Step 2: Validate JetPack Version & Target Compatibility
+    # ============================================================
+    - name: Validate JetPack Configuration
+      shell: bash
+      run: |
+        echo "::group::Validating JetPack configuration"
+        
+        JP_VERSION="${{ inputs.jetpack_version }}"
+        TARGET="${{ inputs.jetson_target }}"
+        
+        echo "Validating:"
+        echo "  JetPack Version: $JP_VERSION"
+        echo "  Target Device: $TARGET"
+        echo ""
+        
+        # Check for common mistakes
+        VALIDATION_PASSED=true
+        
+        # Check if user provided L4T version instead of JetPack version
+        if [[ "$JP_VERSION" =~ ^r[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "::warning::Detected L4T release format ($JP_VERSION). SDK Manager expects JetPack version."
+          echo "::warning::Example: Use '6.0' instead of 'r36.3.0'"
+          echo "::warning::Continuing anyway - SDK Manager may accept L4T format..."
+        fi
+        
+        # Validate Orin + JetPack compatibility
+        if [[ "$TARGET" == *"ORIN"* ]]; then
+          JP_MAJOR=$(echo "$JP_VERSION" | cut -d. -f1)
+          if [[ "$JP_MAJOR" -lt 5 ]] 2>/dev/null; then
+            echo "::error::Orin devices require JetPack 5.0 or later. You specified: $JP_VERSION"
+            echo "::error::Recommended: Use jetpack_version: '6.0' for Orin devices"
+            VALIDATION_PASSED=false
+          fi
+        fi
+        
+        # Validate Nano/TX2 + JetPack compatibility
+        if [[ "$TARGET" == *"NANO"* ]] || [[ "$TARGET" == *"TX2"* ]]; then
+          if [[ ! "$TARGET" == *"ORIN"* ]]; then  # Exclude Orin Nano
+            JP_MAJOR=$(echo "$JP_VERSION" | cut -d. -f1)
+            if [[ "$JP_MAJOR" -ge 5 ]] 2>/dev/null; then
+              echo "::error::Jetson Nano and TX2 only support JetPack 4.x. You specified: $JP_VERSION"
+              echo "::error::Recommended: Use jetpack_version: '4.6.4' for Nano/TX2 devices"
+              VALIDATION_PASSED=false
+            fi
+          fi
+        fi
+        
+        # Check for 'latest' keyword
+        if [[ "$JP_VERSION" == "latest" ]]; then
+          echo "::error::SDK Manager does not support 'latest' as a version specifier"
+          echo "::error::Please specify an explicit version like '6.0', '5.1.2', or '4.6.4'"
+          VALIDATION_PASSED=false
+        fi
+        
+        if [[ "$VALIDATION_PASSED" == "false" ]]; then
+          echo ""
+          echo "::error::============================================"
+          echo "::error::Configuration validation failed!"
+          echo "::error::============================================"
+          echo "::error::Please consult the JetPack compatibility guide:"
+          echo "::error::https://github.com/hackash/JetsonForge/blob/main/JETPACK-VERSIONS.md"
+          echo ""
+          exit 1
+        fi
+        
+        echo "✅ Configuration validated successfully"
+        echo "::endgroup::"
+    
+    # ============================================================
+    # Step 3: Expand Input Paths
+    # ============================================================
+    - name: Expand Input Paths
+      id: expand-paths
+      shell: bash
+      run: |
+        DOWNLOAD_FOLDER="${{ inputs.download_folder }}"
+        WORK_FOLDER="${{ inputs.work_folder }}"
+        SYSROOT_OUTPUT="${{ inputs.sysroot_output }}"
+        
+        # Expand tilde to home directory
+        DOWNLOAD_FOLDER="${DOWNLOAD_FOLDER/#\~/$HOME}"
+        WORK_FOLDER="${WORK_FOLDER/#\~/$HOME}"
+        SYSROOT_OUTPUT="${SYSROOT_OUTPUT/#\~/$HOME}"
+        
+        echo "download_folder=$DOWNLOAD_FOLDER" >> $GITHUB_OUTPUT
+        echo "work_folder=$WORK_FOLDER" >> $GITHUB_OUTPUT
+        echo "sysroot_output=$SYSROOT_OUTPUT" >> $GITHUB_OUTPUT
+        
+        echo "Expanded paths:"
+        echo "  Download folder: $DOWNLOAD_FOLDER"
+        echo "  Work folder: $WORK_FOLDER"
+        echo "  Sysroot output: $SYSROOT_OUTPUT"
+        
+        # Create directories
+        mkdir -p "$DOWNLOAD_FOLDER" "$WORK_FOLDER" "$(dirname "$SYSROOT_OUTPUT")"
+    
+    # ============================================================
+    # Step 4: Compute Docker Image Tag
+    # ============================================================
+    - name: Compute Docker Image Tag
+      id: compute-tag
+      shell: bash
+      run: |
+        echo "::group::Computing Docker image tag"
+        
+        USER_TAG="${{ inputs.build_image_tag }}"
+        
+        if [[ -n "$USER_TAG" ]]; then
+          # User provided explicit tag
+          IMAGE_TAG="$USER_TAG"
+          echo "Using user-provided image tag: $IMAGE_TAG"
+        else
+          # Auto-generate tag based on JetPack version and target
+          JP_VERSION="${{ inputs.jetpack_version }}"
+          TARGET="${{ inputs.jetson_target }}"
+          
+          # Simplify target name for readability
+          # JETSON_ORIN_NANO_TARGETS -> orin-nano
+          # JETSON_AGX_ORIN_TARGETS -> agx-orin
+          # JETSON_XAVIER_NX_TARGETS -> xavier-nx
+          SIMPLE_TARGET=$(echo "$TARGET" | \
+            sed 's/JETSON_//g' | \
+            sed 's/_TARGETS//g' | \
+            tr '[:upper:]' '[:lower:]' | \
+            tr '_' '-')
+          
+          IMAGE_TAG="jetson-cross-base:jp${JP_VERSION}-${SIMPLE_TARGET}"
+          echo "Auto-generated image tag: $IMAGE_TAG"
+        fi
+        
+        echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+        
+        echo ""
+        echo "✅ Docker image will be tagged as: $IMAGE_TAG"
+        echo "::endgroup::"
+    
+    # ============================================================
+    # Step 5: Cache SDK Manager Session
+    # ============================================================
+    - name: Cache SDK Manager Session
+      id: cache-session
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.nvsdkm
+          ~/.config/sdkmanager
+        key: nvsdkm-session-${{ inputs.jetpack_version }}-${{ inputs.cache_key_suffix }}
+        restore-keys: |
+          nvsdkm-session-${{ inputs.jetpack_version }}-
+          nvsdkm-session-
+    
+    # ============================================================
+    # Step 6: Install NVIDIA SDK Manager
+    # ============================================================
+    - name: Install NVIDIA SDK Manager
+      shell: bash
+      run: |
+        echo "::group::Installing NVIDIA SDK Manager"
+        
+        # Check if SDK Manager is already installed
+        if command -v sdkmanager &> /dev/null; then
+          echo "SDK Manager is already installed"
+          sdkmanager --version || true
+        else
+          echo "Installing SDK Manager..."
+          
+          # Download the latest SDK Manager .deb
+          SDKM_URL="https://developer.nvidia.com/downloads/sdkmanager/secure/clients/sdkmanager_2.2.0-11976_amd64.deb"
+          SDKM_DEB="/tmp/sdkmanager.deb"
+          
+          echo "Downloading SDK Manager from NVIDIA..."
+          curl -L -o "$SDKM_DEB" "$SDKM_URL" || {
+            echo "::warning::Failed to download SDK Manager from $SDKM_URL"
+            echo "::warning::You may need to download it manually from NVIDIA Developer website"
+            echo "Please visit: https://developer.nvidia.com/sdk-manager"
+            exit 1
+          }
+          
+          echo "Installing SDK Manager package..."
+          sudo apt-get install -y "$SDKM_DEB"
+          
+          rm -f "$SDKM_DEB"
+          
+          echo "SDK Manager installed successfully"
+          sdkmanager --version || true
+        fi
+        
+        echo "::endgroup::"
+    
+    # ============================================================
+    # Step 7: Authenticate SDK Manager
+    # ============================================================
+    - name: Authenticate SDK Manager
+      if: inputs.skip_authentication != 'true'
+      shell: bash
+      env:
+        SLACK_WEBHOOK_URL: ${{ inputs.slack_webhook }}
+        TEAMS_WEBHOOK_URL: ${{ inputs.teams_webhook }}
+        AUTH_TIMEOUT: ${{ inputs.auth_timeout }}
+      run: |
+        echo "::group::SDK Manager Authentication"
+        
+        # Make script executable
+        chmod +x "${{ github.action_path }}/scripts/sdk-login-helper.sh"
+        
+        # Run authentication helper
+        "${{ github.action_path }}/scripts/sdk-login-helper.sh"
+        
+        echo "::endgroup::"
+    
+    # ============================================================
+    # Step 8: Cache JetPack Downloads
+    # ============================================================
+    - name: Cache JetPack Downloads
+      id: cache-downloads
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.expand-paths.outputs.download_folder }}
+        key: jetpack-downloads-${{ inputs.jetpack_version }}-${{ inputs.jetson_target }}-${{ inputs.cache_key_suffix }}
+        restore-keys: |
+          jetpack-downloads-${{ inputs.jetpack_version }}-${{ inputs.jetson_target }}-
+          jetpack-downloads-${{ inputs.jetpack_version }}-
+    
+    # ============================================================
+    # Step 9: Download JetPack Files
+    # ============================================================
+    - name: Download JetPack Files
+      if: steps.cache-downloads.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        echo "::group::Downloading JetPack ${{ inputs.jetpack_version }}"
+        
+        DOWNLOAD_FOLDER="${{ steps.expand-paths.outputs.download_folder }}"
+        JP_VERSION="${{ inputs.jetpack_version }}"
+        USE_ARCHIVED="${{ inputs.use_archived_versions }}"
+        
+        echo "Downloading JetPack $JP_VERSION for ${{ inputs.jetson_target }}..."
+        echo "Download location: $DOWNLOAD_FOLDER"
+        echo ""
+        echo "ℹ️  For version compatibility, see: https://github.com/hackash/JetsonForge/blob/main/JETPACK-VERSIONS.md"
+        echo ""
+        
+        # Determine if we should use --archived-versions flag
+        ARCHIVED_FLAG=""
+        
+        if [[ "$USE_ARCHIVED" == "true" ]]; then
+          echo "Using --archived-versions flag (explicitly enabled)"
+          ARCHIVED_FLAG="--archived-versions"
+        elif [[ "$USE_ARCHIVED" == "false" ]]; then
+          echo "Not using --archived-versions flag (explicitly disabled)"
+          ARCHIVED_FLAG=""
+        else
+          # Auto mode: detect if this is likely an archived version
+          JP_MAJOR=$(echo "$JP_VERSION" | grep -oP '^[0-9]+' || echo "0")
+          
+          # JetPack 6.x is current (as of 2026), older versions are archived
+          if [[ "$JP_MAJOR" -lt 6 ]] 2>/dev/null; then
+            echo "Detected older JetPack version ($JP_VERSION < 6.0)"
+            echo "Using --archived-versions flag (auto-detected)"
+            ARCHIVED_FLAG="--archived-versions"
+          else
+            echo "Detected current JetPack version ($JP_VERSION >= 6.0)"
+            echo "Not using --archived-versions flag (auto-detected)"
+            ARCHIVED_FLAG=""
+          fi
+        fi
+        
+        echo ""
+        echo "Executing SDK Manager download..."
+        
+        # Build the command dynamically
+        sdkmanager --cli \
+          --action downloadonly \
+          --download-folder "$DOWNLOAD_FOLDER" \
+          --login-type devzone \
+          --exit-on-finish \
+          --license accept \
+          --product Jetson \
+          --version "$JP_VERSION" \
+          --target-os Linux \
+          --host \
+          --target "${{ inputs.jetson_target }}" \
+          $ARCHIVED_FLAG
+        
+        echo ""
+        echo "Download complete. Files saved to: $DOWNLOAD_FOLDER"
+        ls -lh "$DOWNLOAD_FOLDER"
+        
+        echo "::endgroup::"
+    
+    # ============================================================
+    # Step 10: Cache Built Sysroot
+    # ============================================================
+    - name: Cache Sysroot Archive
+      id: cache-sysroot
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.expand-paths.outputs.sysroot_output }}
+        key: jetpack-sysroot-${{ inputs.jetpack_version }}-${{ inputs.jetson_target }}-${{ inputs.cache_key_suffix }}-${{ hashFiles(format('{0}/*.deb', steps.expand-paths.outputs.download_folder)) }}
+        restore-keys: |
+          jetpack-sysroot-${{ inputs.jetpack_version }}-${{ inputs.jetson_target }}-${{ inputs.cache_key_suffix }}-
+          jetpack-sysroot-${{ inputs.jetpack_version }}-${{ inputs.jetson_target }}-
+    
+    # ============================================================
+    # Step 11: Build Sysroot
+    # ============================================================
+    - name: Build Sysroot
+      id: sysroot-build
+      if: steps.cache-sysroot.outputs.cache-hit != 'true' && inputs.skip_sysroot_build != 'true'
+      shell: bash
+      env:
+        JETSON_FORGE_DL: ${{ steps.expand-paths.outputs.download_folder }}
+        JETSON_FORGE_WORK: ${{ steps.expand-paths.outputs.work_folder }}
+        JETSON_FORGE_OUT: ${{ steps.expand-paths.outputs.sysroot_output }}
+      run: |
+        echo "::group::Building JetPack Sysroot"
+        
+        echo "Environment variables:"
+        echo "  JETSON_FORGE_DL=$JETSON_FORGE_DL"
+        echo "  JETSON_FORGE_WORK=$JETSON_FORGE_WORK"
+        echo "  JETSON_FORGE_OUT=$JETSON_FORGE_OUT"
+        
+        # Make script executable
+        chmod +x "${{ github.action_path }}/scripts/make-sys-root.sh"
+        
+        # Run sysroot build script
+        "${{ github.action_path }}/scripts/make-sys-root.sh"
+        
+        echo "Sysroot build complete: $JETSON_FORGE_OUT"
+        ls -lh "$JETSON_FORGE_OUT"
+        
+        echo "sysroot_path=$JETSON_FORGE_OUT" >> $GITHUB_OUTPUT
+        
+        echo "::endgroup::"
+    
+    - name: Set Sysroot Output (from cache)
+      id: sysroot-cached
+      if: steps.cache-sysroot.outputs.cache-hit == 'true'
+      shell: bash
+      run: |
+        SYSROOT_PATH="${{ steps.expand-paths.outputs.sysroot_output }}"
+        echo "Sysroot restored from cache: $SYSROOT_PATH"
+        echo "sysroot_path=$SYSROOT_PATH" >> $GITHUB_OUTPUT
+    
+    # ============================================================
+    # Step 12: Copy Sysroot to Repository
+    # ============================================================
+    - name: Copy Sysroot to Repository
+      shell: bash
+      run: |
+        echo "::group::Preparing sysroot for Docker build"
+        
+        SYSROOT_SRC="${{ steps.expand-paths.outputs.sysroot_output }}"
+        SYSROOT_BASENAME="$(basename "$SYSROOT_SRC")"
+        SYSROOT_DEST="${{ github.action_path }}/sysroots/$SYSROOT_BASENAME"
+        
+        mkdir -p "${{ github.action_path }}/sysroots"
+        
+        if [[ ! -f "$SYSROOT_SRC" ]]; then
+          echo "::error::Sysroot file not found: $SYSROOT_SRC"
+          exit 1
+        fi
+        
+        echo "Copying sysroot to repository..."
+        echo "  Source: $SYSROOT_SRC"
+        echo "  Destination: $SYSROOT_DEST"
+        
+        cp "$SYSROOT_SRC" "$SYSROOT_DEST"
+        
+        echo "Sysroot copied successfully"
+        ls -lh "$SYSROOT_DEST"
+        
+        echo "sysroot_basename=$SYSROOT_BASENAME" >> $GITHUB_OUTPUT
+        
+        echo "::endgroup::"
+      id: copy-sysroot
+    
+    # ============================================================
+    # Step 13: Build Docker Cross-Compilation Image
+    # ============================================================
+    - name: Build Docker Image
+      id: docker-build
+      shell: bash
+      run: |
+        echo "::group::Building Docker cross-compilation image"
+        
+        cd "${{ github.action_path }}"
+        
+        SYSROOT_BASENAME="${{ steps.copy-sysroot.outputs.sysroot_basename }}"
+        IMAGE_TAG="${{ steps.compute-tag.outputs.image_tag }}"
+        
+        echo "Building Docker image: $IMAGE_TAG"
+        echo "Using sysroot: $SYSROOT_BASENAME"
+        
+        docker build \
+          --network host \
+          --build-arg TAR_ZST_NAME="$SYSROOT_BASENAME" \
+          -t "$IMAGE_TAG" \
+          -f docker/x86-cross/Dockerfile \
+          .
+        
+        echo "Docker image built successfully: $IMAGE_TAG"
+        docker images | grep "$(echo "$IMAGE_TAG" | cut -d: -f1)" || true
+        
+        echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+        
+        echo "::endgroup::"
+    
+    # ============================================================
+    # Step 14: Verify Docker Image
+    # ============================================================
+    - name: Verify Docker Image
+      shell: bash
+      run: |
+        echo "::group::Verifying Docker image"
+        
+        IMAGE_TAG="${{ steps.compute-tag.outputs.image_tag }}"
+        
+        echo "Testing Docker image: $IMAGE_TAG"
+        
+        # Test that the image runs and has the expected tools
+        docker run --rm "$IMAGE_TAG" bash -c '
+          echo "=== Cross-Compilation Environment Verification ==="
+          echo ""
+          echo "Architecture:"
+          uname -m
+          echo ""
+          echo "Cross-compiler:"
+          aarch64-linux-gnu-gcc --version | head -n1
+          echo ""
+          echo "CMake:"
+          cmake --version | head -n1
+          echo ""
+          echo "Toolchain file:"
+          ls -l /toolchains/aarch64-jetson.cmake
+          echo ""
+          echo "Sysroot:"
+          ls -ld $SYSROOT
+          echo ""
+          echo "CUDA (in sysroot):"
+          ls -ld $SYSROOT/usr/local/cuda 2>/dev/null || echo "CUDA symlink not found"
+          echo ""
+          echo "=== Verification Complete ==="
+        '
+        
+        echo "::endgroup::"
+    
+    # ============================================================
+    # Step 15: Cleanup (Optional)
+    # ============================================================
+    - name: Cleanup Temporary Files
+      if: always()
+      shell: bash
+      run: |
+        echo "::group::Cleanup"
+        
+        # Remove temporary sysroot copy from repository
+        # (Keep the cached version in the specified output location)
+        SYSROOT_BASENAME="${{ steps.copy-sysroot.outputs.sysroot_basename }}"
+        if [[ -n "$SYSROOT_BASENAME" ]]; then
+          rm -f "${{ github.action_path }}/sysroots/$SYSROOT_BASENAME" || true
+        fi
+        
+        # Clean up work folder if it exists
+        WORK_FOLDER="${{ steps.expand-paths.outputs.work_folder }}"
+        if [[ -d "$WORK_FOLDER" ]]; then
+          echo "Cleaning up work folder: $WORK_FOLDER"
+          rm -rf "$WORK_FOLDER" || true
+        fi
+        
+        echo "Cleanup complete"
+        echo "::endgroup::"

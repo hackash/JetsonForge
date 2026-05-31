@@ -1,0 +1,70 @@
+# syntax=docker/dockerfile:1.7
+#
+# Multi-Stage Dockerfile for Jetson Production Deployment
+# 
+# This Dockerfile demonstrates the recommended pattern:
+# - Stage 1: Cross-compile using JetsonForge base image (runs on x86_64)
+# - Stage 2: Create minimal runtime image based on NVIDIA L4T (runs on Jetson ARM64)
+#
+# Usage:
+#   docker build \
+#     --build-arg L4T_CROSS_BASE=jetson-cross-base:jp6.0-orin-nano \
+#     --build-arg TARGET_JETPACK_TAG=r36.3.0 \
+#     -t my-jetson-app:latest \
+#     -f Dockerfile.production .
+
+# Build arguments
+ARG L4T_CROSS_BASE=jetson-cross-base:jp6.0-orin-nano
+ARG TARGET_JETPACK_TAG=r36.3.0
+
+# ============================================================
+# Stage 1: Cross-Compilation (x86_64 host)
+# ============================================================
+FROM ${L4T_CROSS_BASE} AS builder
+
+WORKDIR /app
+
+# Copy source code
+COPY CMakeLists.txt main.cpp ./
+
+# Cross-compile the application
+RUN cmake -B build -S . \
+      -DCMAKE_TOOLCHAIN_FILE=/toolchains/aarch64-jetson.cmake \
+      -DCMAKE_BUILD_TYPE=Release \
+      -G Ninja && \
+    cmake --build build -j$(nproc) && \
+    # Verify the binary is ARM64
+    file build/device_query && \
+    aarch64-linux-gnu-strip build/device_query
+
+# ============================================================
+# Stage 2: Runtime Image (ARM64 Jetson device)
+# ============================================================
+FROM nvcr.io/nvidia/l4t-jetpack:${TARGET_JETPACK_TAG}
+
+# Install runtime dependencies if needed
+# RUN apt-get update && apt-get install -y --no-install-recommends \
+#     libopencv-core-dev \
+#  && rm -rf /var/lib/apt/lists/*
+
+# Copy the compiled binary from builder stage
+COPY --from=builder /app/build/device_query /usr/local/bin/device_query
+
+# Set executable permissions
+RUN chmod +x /usr/local/bin/device_query
+
+# Create non-root user for security
+RUN useradd -m -u 1000 jetson && \
+    chown -R jetson:jetson /usr/local/bin/device_query
+
+USER jetson
+
+# Default command
+CMD ["/usr/local/bin/device_query"]
+
+# Runtime labels
+LABEL org.opencontainers.image.title="Jetson CUDA Device Query"
+LABEL org.opencontainers.image.description="Cross-compiled CUDA application for NVIDIA Jetson"
+LABEL org.opencontainers.image.vendor="Your Organization"
+LABEL org.opencontainers.image.target.platform="linux/arm64"
+LABEL org.opencontainers.image.target.device="NVIDIA Jetson"
