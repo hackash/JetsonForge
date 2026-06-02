@@ -85,6 +85,10 @@ jobs:
           # Optional: Microsoft Teams webhook
           teams_webhook: ${{ secrets.TEAMS_WEBHOOK }}
           
+          # Optional: Telegram bot (requires both bot_token and chat_id)
+          # telegram_bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          # telegram_chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
+          
           # Optional: Custom image tag (auto-generated if not specified)
           # Auto-generated format: jetson-cross-base:jp{VERSION}-{TARGET}
           # Example auto-generated: jetson-cross-base:jp6.0-orin-nano

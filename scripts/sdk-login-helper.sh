@@ -8,9 +8,11 @@ set -euo pipefail
 # and sends notification webhooks to Slack and/or Microsoft Teams.
 #
 # Environment Variables:
-#   SLACK_WEBHOOK_URL  - Optional Slack incoming webhook URL
-#   TEAMS_WEBHOOK_URL  - Optional Microsoft Teams webhook URL
-#   AUTH_TIMEOUT       - Maximum wait time in seconds (default: 300)
+#   SLACK_WEBHOOK_URL    - Optional Slack incoming webhook URL
+#   TEAMS_WEBHOOK_URL    - Optional Microsoft Teams webhook URL
+#   TELEGRAM_BOT_TOKEN   - Optional Telegram bot token
+#   TELEGRAM_CHAT_ID     - Optional Telegram chat ID
+#   AUTH_TIMEOUT         - Maximum wait time in seconds (default: 300)
 # ============================================================
 
 AUTH_TIMEOUT="${AUTH_TIMEOUT:-300}"
@@ -147,6 +149,53 @@ EOF
         log_success "Slack notification sent successfully"
     else
         log_warning "Failed to send Slack notification"
+    fi
+}
+
+# Send Telegram notification
+send_telegram_notification() {
+    local login_url="$1"
+    local bot_token="${TELEGRAM_BOT_TOKEN:-}"
+    local chat_id="${TELEGRAM_CHAT_ID:-}"
+    
+    if [[ -z "$bot_token" ]] || [[ -z "$chat_id" ]]; then
+        log_info "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set, skipping Telegram notification"
+        return 0
+    fi
+    
+    log_info "Sending authentication URL to Telegram..."
+    
+    # Telegram message with Markdown formatting
+    local message
+    message=$(cat <<EOF
+🔐 *NVIDIA SDK Manager Authentication Required*
+
+Your JetsonForge GitHub Action build is waiting for authentication.
+
+*Please click the link below to authenticate:*
+
+[🔗 Authenticate SDK Manager](${login_url})
+
+⏰ Timeout: ${AUTH_TIMEOUT}s | 🤖 Action: JetsonForge
+EOF
+)
+    
+    # URL encode the message
+    local encoded_message
+    encoded_message=$(echo -n "$message" | jq -sRr @uri)
+    
+    # Telegram Bot API URL
+    local api_url="https://api.telegram.org/bot${bot_token}/sendMessage"
+    
+    if curl -X POST "$api_url" \
+        -d "chat_id=${chat_id}" \
+        -d "text=${encoded_message}" \
+        -d "parse_mode=Markdown" \
+        -d "disable_web_page_preview=false" \
+        --silent --show-error > /dev/null 2>&1; then
+        log_success "Telegram notification sent successfully"
+    else
+        log_warning "Failed to send Telegram notification"
     fi
 }
 
@@ -292,6 +341,7 @@ main() {
     # Send webhook notifications
     send_slack_notification "$login_url"
     send_teams_notification "$login_url"
+    send_telegram_notification "$login_url"
     
     log_header "WAITING FOR AUTHENTICATION"
     

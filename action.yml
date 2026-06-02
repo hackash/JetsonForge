@@ -1,5 +1,5 @@
 name: 'JetsonForge Cross-Compiler'
-description: 'Build NVIDIA Jetson cross-compilation Docker images with cached sysroots and SDK authentication'
+description: 'Build NVIDIA Jetson cross-compilation Docker images with cached sysroots and SDK authentication. Supports Slack, Teams, and Telegram notifications.'
 author: 'JetsonForge Contributors'
 
 branding:
@@ -32,6 +32,16 @@ inputs:
   
   teams_webhook:
     description: 'Microsoft Teams incoming webhook URL for authentication notifications (optional)'
+    required: false
+    default: ''
+  
+  telegram_bot_token:
+    description: 'Telegram bot token for authentication notifications (optional, requires telegram_chat_id)'
+    required: false
+    default: ''
+  
+  telegram_chat_id:
+    description: 'Telegram chat ID for authentication notifications (optional, requires telegram_bot_token)'
     required: false
     default: ''
   
@@ -319,6 +329,8 @@ runs:
       env:
         SLACK_WEBHOOK_URL: ${{ inputs.slack_webhook }}
         TEAMS_WEBHOOK_URL: ${{ inputs.teams_webhook }}
+        TELEGRAM_BOT_TOKEN: ${{ inputs.telegram_bot_token }}
+        TELEGRAM_CHAT_ID: ${{ inputs.telegram_chat_id }}
         AUTH_TIMEOUT: ${{ inputs.auth_timeout }}
       run: |
         echo "::group::SDK Manager Authentication"

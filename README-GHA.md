@@ -41,7 +41,7 @@ Once the action completes, you'll have a Docker image (`jetson-cross-base:local`
 
 ### 🔐 Headless Authentication
 - Extracts NVIDIA SDK Manager login URLs automatically
-- Sends interactive authentication links via **Slack** and/or **Microsoft Teams** webhooks
+- Sends interactive authentication links via **Slack**, **Microsoft Teams**, and/or **Telegram** 
 - Waits for authentication with configurable timeout
 - Caches authenticated sessions for subsequent runs
 
@@ -69,6 +69,7 @@ Once the action completes, you'll have a Docker image (`jetson-cross-base:local`
 ### Optional (Recommended)
 - **Slack Workspace** with incoming webhook capability
 - **Microsoft Teams** with incoming webhook configured
+- **Telegram Bot** for notifications (free, easy setup)
 - **Self-hosted GitHub runner** with Docker and sufficient disk space (~60 GB recommended)
 
 > 💡 **Important**: Make sure to verify your JetPack version and target device are compatible using the [JETPACK-VERSIONS.md](JETPACK-VERSIONS.md) reference guide before configuring the action.
@@ -264,7 +265,22 @@ jobs:
 
 ## 🔔 Webhook Configuration
 
-The action can send authentication notifications to Slack and/or Microsoft Teams.
+The action can send authentication notifications to Slack, Microsoft Teams, and/or Telegram.
+
+### Notification Channel Comparison
+
+| Feature | Slack | Teams | Telegram |
+|---------|-------|-------|----------|
+| **Setup Complexity** | Medium | Medium | Easy |
+| **Cost** | Free tier available | Requires Microsoft 365 | Completely free |
+| **Organization** | Workspace admin access | Team admin access | Personal bot |
+| **Rich Formatting** | ✅ Blocks API | ✅ Adaptive Cards | ✅ Markdown |
+| **Clickable Links** | ✅ | ✅ | ✅ |
+| **Best For** | Team collaboration | Microsoft ecosystem | Personal/small teams |
+
+**Recommendation:** Telegram is the easiest to set up and completely free. Choose Slack/Teams if your organization already uses them.
+
+---
 
 ### Slack Webhook Setup
 
@@ -342,16 +358,71 @@ The action can send authentication notifications to Slack and/or Microsoft Teams
 
 ---
 
-### Using Both Webhooks
+### Telegram Bot Setup
 
-Send notifications to both Slack **and** Teams:
+1. **Create a Telegram Bot:**
+   - Open Telegram and search for [@BotFather](https://t.me/botfather)
+   - Send `/newbot` command
+   - Follow the prompts to name your bot (e.g., "JetsonForge Notifications")
+   - Copy the bot token (looks like: `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`)
+
+2. **Get Your Chat ID:**
+   
+   **Option A: Personal Chat**
+   - Send a message to your new bot
+   - Visit: `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates`
+   - Find your `chat.id` in the JSON response (a number like `123456789`)
+   
+   **Option B: Group/Channel**
+   - Add your bot to a group or channel
+   - Make the bot an admin (for channels)
+   - Send a message mentioning the bot
+   - Visit: `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates`
+   - Find the `chat.id` (will be negative for groups/channels like `-1001234567890`)
+
+3. **Add to GitHub Secrets:**
+   - Go to your repository → **Settings** → **Secrets and variables** → **Actions**
+   - Click **"New repository secret"**
+   - Name: `TELEGRAM_BOT_TOKEN`, Value: `<your bot token>`
+   - Create another secret:
+   - Name: `TELEGRAM_CHAT_ID`, Value: `<your chat id>`
+
+4. **Use in Workflow:**
+   ```yaml
+   - uses: hackash/JetsonForge@main
+     with:
+       telegram_bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+       telegram_chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
+   ```
+
+**Example Notification:**
+
+> **🔐 NVIDIA SDK Manager Authentication Required**
+>
+> Your JetsonForge GitHub Action build is waiting for authentication.
+>
+> **Please click the link below to authenticate:**
+>
+> [🔗 Authenticate SDK Manager](https://static.nvidia.com/sdk-manager/login.html?code=...)
+>
+> ⏰ Timeout: 300s | 🤖 Action: JetsonForge
+
+---
+
+### Using Multiple Notification Channels
+
+Send notifications to Slack, Teams, **and** Telegram simultaneously:
 
 ```yaml
 - uses: hackash/JetsonForge@main
   with:
     slack_webhook: ${{ secrets.SLACK_WEBHOOK }}
     teams_webhook: ${{ secrets.TEAMS_WEBHOOK }}
+    telegram_bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+    telegram_chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
 ```
+
+The action will send to all configured channels. If any credentials are missing, that channel is skipped without failing the build.
 
 ---
 
@@ -753,6 +824,8 @@ docker run -d --runtime nvidia ghcr.io/your-org/my-app:latest
 | `jetson_target` | Target device identifier | No | `JETSON_ORIN_NANO_TARGETS` |
 | `slack_webhook` | Slack incoming webhook URL | No | `''` |
 | `teams_webhook` | Microsoft Teams webhook URL | No | `''` |
+| `telegram_bot_token` | Telegram bot token | No | `''` |
+| `telegram_chat_id` | Telegram chat ID | No | `''` |
 | `build_image_tag` | Docker image tag (auto-generated if empty) | No | `''` (auto) |
 | `download_folder` | SDK Manager download directory | No | `~/jetpack-downloads` |
 | `work_folder` | Sysroot build working directory | No | `~/jetpack-work` |
@@ -847,7 +920,29 @@ Or manually delete cache:
 curl -X POST -H 'Content-Type: application/json' \
   --data '{"text":"Test notification"}' \
   "$SLACK_WEBHOOK_URL"
+
+# Test Telegram bot
+curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/sendMessage" \
+  -d "chat_id=<YOUR_CHAT_ID>" \
+  -d "text=Test notification"
 ```
+
+---
+
+**Problem:** Telegram notifications not working
+
+**Solution:**
+1. Verify bot token is correct (check for typos)
+2. Verify chat ID is correct (should be a number, possibly negative)
+3. Test manually with curl command above
+4. Make sure you've sent at least one message to the bot first
+5. For groups/channels, ensure bot is added and has admin rights
+6. Check that both `telegram_bot_token` AND `telegram_chat_id` are provided
+
+**Common mistakes:**
+- Using bot username instead of bot token
+- Using channel username (@channel) instead of numeric chat ID
+- Forgetting to start the bot (send `/start` to your bot)
 
 ---
 
