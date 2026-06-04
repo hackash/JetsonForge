@@ -295,9 +295,29 @@ runs:
           echo "SDK Manager is already installed"
           sdkmanager --version || true
         else
-          echo "Installing SDK Manager from apt repository..."
+          echo "Installing SDK Manager from NVIDIA repository..."
+          
+          # Detect Ubuntu version
+          . /etc/os-release
+          case "$VERSION_ID" in
+            24.04) DISTRO="ubuntu2404" ;;
+            22.04) DISTRO="ubuntu2204" ;;
+            *)
+              echo "::warning::Unsupported Ubuntu version: $VERSION_ID, defaulting to ubuntu2204"
+              DISTRO="ubuntu2204"
+              ;;
+          esac
+          
+          echo "Detected distro: $DISTRO (Ubuntu $VERSION_ID)"
+          
+          # Download and install CUDA keyring
+          wget https://developer.download.nvidia.com/compute/cuda/repos/${DISTRO}/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          rm -f cuda-keyring_1.1-1_all.deb
+          
+          # Update package list and install SDK Manager
           sudo apt-get update
-          sudo apt-get install -y nvidia-sdk-manager
+          sudo apt-get install -y sdkmanager
           
           echo "SDK Manager installed successfully"
           sdkmanager --version || true
