@@ -54,23 +54,22 @@ log_header() {
 
 # Check if SDK Manager is already authenticated
 check_authentication() {
-    # Check for session files in typical locations
-    if [[ -d "$NVSDKM_DIR" ]] && [[ -n "$(ls -A "$NVSDKM_DIR" 2>/dev/null || true)" ]]; then
-        log_info "Found SDK Manager session directory: $NVSDKM_DIR"
-        return 0
-    fi
-    
-    if [[ -d "$CONFIG_DIR" ]] && [[ -n "$(ls -A "$CONFIG_DIR" 2>/dev/null || true)" ]]; then
-        log_info "Found SDK Manager config directory: $CONFIG_DIR"
-        return 0
-    fi
-    
-    # Try a simple query command to verify authentication
-    if sdkmanager --query --cli 2>&1 | grep -qi "login\|authentication\|credentials"; then
+    log_info "Checking SDK Manager authentication status..."
+
+    # Run a non-interactive query with a timeout.
+    # When unauthenticated, sdkmanager immediately prints a login URL before
+    # blocking — the timeout ensures we don't hang on a slow but valid session.
+    # Directory existence (~/.nvsdkm, ~/.config/sdkmanager) is not a reliable
+    # indicator because the cache restore step populates those dirs even when
+    # the stored session is expired or invalid.
+    local output
+    output=$(timeout 60 sdkmanager --query --cli 2>&1 || true)
+
+    if echo "$output" | grep -qiP 'login\.html\?code=|please log in|not authenticated|devzone.*required'; then
         log_warning "SDK Manager requires authentication"
         return 1
     fi
-    
+
     log_success "SDK Manager is already authenticated"
     return 0
 }
@@ -262,32 +261,33 @@ EOF
     fi
 }
 
-# Wait for authentication to complete
+# Wait for authentication to complete by watching the sdkmanager login PID.
+# When the user authenticates in the browser, sdkmanager exits normally and
+# tee's stdin closes — both leave the pipeline. We verify once at the end.
 wait_for_authentication() {
+    local login_pid="$1"
     local elapsed=0
     local spinner_chars="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
     local spinner_idx=0
-    
+
     log_info "Waiting for authentication (timeout: ${AUTH_TIMEOUT}s)..."
-    
-    while [[ $elapsed -lt $AUTH_TIMEOUT ]]; do
-        # Check if authenticated
-        if check_authentication; then
-            log_success "Authentication completed successfully!"
-            return 0
-        fi
-        
-        # Display spinner
+
+    while kill -0 "$login_pid" 2>/dev/null && [[ $elapsed -lt $AUTH_TIMEOUT ]]; do
         spinner_idx=$(( (spinner_idx + 1) % ${#spinner_chars} ))
         printf "\r${BLUE}[${spinner_chars:$spinner_idx:1}]${NC} Waiting for authentication... (${elapsed}s / ${AUTH_TIMEOUT}s)"
-        
         sleep "$CHECK_INTERVAL"
         elapsed=$((elapsed + CHECK_INTERVAL))
     done
-    
-    echo "" # New line after spinner
-    log_error "Authentication timeout reached (${AUTH_TIMEOUT}s)"
-    return 1
+
+    echo ""
+
+    if kill -0 "$login_pid" 2>/dev/null; then
+        log_error "Authentication timeout reached (${AUTH_TIMEOUT}s)"
+        return 1
+    fi
+
+    log_info "Login process completed, verifying session..."
+    check_authentication
 }
 
 # Main execution
@@ -308,14 +308,15 @@ main() {
     output_file=$(mktemp)
     trap "rm -f '$output_file'" EXIT
     
-    # Start SDK Manager login in background and capture output
+    # Start SDK Manager login in background and capture output.
+    # $! after a pipeline is the PID of the last command (tee); when sdkmanager
+    # exits, tee's stdin closes and tee exits too — so watching tee's PID is
+    # equivalent to watching the whole pipeline.
     log_info "Launching SDK Manager CLI login..."
-    (
-        sdkmanager --cli --login-type devzone 2>&1 | tee "$output_file" &
-        echo $! > "${output_file}.pid"
-    ) &
-    
-    # Give it a moment to start and generate the URL
+    sdkmanager --cli --login-type devzone 2>&1 | tee "$output_file" &
+    LOGIN_BG_PID=$!
+
+    # Give sdkmanager a moment to start and print the login URL
     sleep 5
     
     # Extract the login URL
@@ -346,21 +347,13 @@ main() {
     log_header "WAITING FOR AUTHENTICATION"
     
     # Wait for user to complete authentication
-    if wait_for_authentication; then
+    if wait_for_authentication "$LOGIN_BG_PID"; then
+        wait "$LOGIN_BG_PID" 2>/dev/null || true
         log_success "SDK Manager authentication successful!"
-        
-        # Clean up background process if still running
-        if [[ -f "${output_file}.pid" ]]; then
-            local pid
-            pid=$(cat "${output_file}.pid")
-            if ps -p "$pid" > /dev/null 2>&1; then
-                kill "$pid" 2>/dev/null || true
-            fi
-        fi
-        
         exit 0
     else
         log_error "Authentication failed or timed out"
+        kill "$LOGIN_BG_PID" 2>/dev/null || true
         exit 1
     fi
 }
