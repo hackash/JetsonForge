@@ -297,25 +297,113 @@ runs:
         else
           echo "Installing SDK Manager..."
           
-          # Download the latest SDK Manager .deb
+          # SDK Manager download configuration
           SDKM_URL="https://developer.nvidia.com/downloads/sdkmanager/secure/clients/sdkmanager_2.2.0-11976_amd64.deb"
           SDKM_DEB="/tmp/sdkmanager.deb"
+          MIN_FILE_SIZE=50000000  # 50MB minimum (expected ~100MB)
+          MAX_RETRIES=3
+          RETRY_DELAY=5
           
-          echo "Downloading SDK Manager from NVIDIA..."
-          curl -L -o "$SDKM_DEB" "$SDKM_URL" || {
-            echo "::warning::Failed to download SDK Manager from $SDKM_URL"
-            echo "::warning::You may need to download it manually from NVIDIA Developer website"
-            echo "Please visit: https://developer.nvidia.com/sdk-manager"
-            exit 1
+          # Function to download with retry logic
+          download_with_retry() {
+            local url="$1"
+            local output="$2"
+            local retries=0
+            
+            while [ $retries -lt $MAX_RETRIES ]; do
+              echo "Download attempt $((retries + 1))/$MAX_RETRIES..."
+              
+              # Clean up any partial download
+              rm -f "$output" "$output.partial"
+              
+              # Download with progress and resume support
+              if curl -L --fail --progress-bar \
+                   --connect-timeout 30 \
+                   --max-time 300 \
+                   --retry 3 \
+                   --retry-delay 2 \
+                   -o "$output" \
+                   "$url"; then
+                
+                # Verify file exists and has reasonable size
+                if [ -f "$output" ]; then
+                  local file_size=$(stat -c%s "$output" 2>/dev/null || stat -f%z "$output" 2>/dev/null || echo "0")
+                  echo "Downloaded file size: $file_size bytes"
+                  
+                  if [ "$file_size" -gt "$MIN_FILE_SIZE" ]; then
+                    # Verify it's a valid Debian package
+                    if file "$output" | grep -q "Debian binary package"; then
+                      echo "✅ Download successful and verified"
+                      return 0
+                    else
+                      echo "⚠️  Downloaded file is not a valid Debian package"
+                      file "$output"
+                    fi
+                  else
+                    echo "⚠️  Downloaded file is too small (expected >50MB, got $file_size bytes)"
+                  fi
+                fi
+              else
+                echo "⚠️  Download failed with curl error code: $?"
+              fi
+              
+              retries=$((retries + 1))
+              if [ $retries -lt $MAX_RETRIES ]; then
+                echo "Retrying in ${RETRY_DELAY} seconds..."
+                sleep $RETRY_DELAY
+                RETRY_DELAY=$((RETRY_DELAY * 2))  # Exponential backoff
+              fi
+            done
+            
+            return 1
           }
           
-          echo "Installing SDK Manager package..."
-          sudo apt-get install -y "$SDKM_DEB"
+          # Attempt download
+          echo "Downloading SDK Manager from NVIDIA..."
+          echo "URL: $SDKM_URL"
           
-          rm -f "$SDKM_DEB"
-          
-          echo "SDK Manager installed successfully"
-          sdkmanager --version || true
+          if download_with_retry "$SDKM_URL" "$SDKM_DEB"; then
+            echo ""
+            echo "Installing SDK Manager package..."
+            
+            # Install with proper error handling
+            if sudo dpkg -i "$SDKM_DEB" 2>&1 | tee /tmp/dpkg-install.log; then
+              echo "✅ SDK Manager installed successfully"
+            else
+              echo "❌ dpkg installation failed, attempting to fix dependencies..."
+              sudo apt-get install -f -y
+              
+              # Verify installation
+              if command -v sdkmanager &> /dev/null; then
+                echo "✅ SDK Manager installed after dependency fix"
+              else
+                echo "❌ SDK Manager installation failed"
+                cat /tmp/dpkg-install.log
+                exit 1
+              fi
+            fi
+            
+            # Clean up
+            rm -f "$SDKM_DEB" /tmp/dpkg-install.log
+            
+            # Verify installation
+            echo ""
+            echo "Verifying SDK Manager installation..."
+            sdkmanager --version || {
+              echo "::error::SDK Manager installed but not responding to --version"
+              exit 1
+            }
+          else
+            echo "::error::Failed to download SDK Manager after $MAX_RETRIES attempts"
+            echo ""
+            echo "Troubleshooting steps:"
+            echo "1. Check if NVIDIA servers are accessible"
+            echo "2. Verify the download URL is still valid"
+            echo "3. Try downloading manually from: https://developer.nvidia.com/sdk-manager"
+            echo "4. Check GitHub Actions runner network connectivity"
+            echo ""
+            exit 1
+          fi
         fi
         
         echo "::endgroup::"
