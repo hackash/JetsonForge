@@ -420,6 +420,7 @@ runs:
           --target-os Linux \
           --host \
           --target "${{ inputs.jetson_target }}" \
+          --skip-version-check \
           $ARCHIVED_FLAG
         
         echo ""
