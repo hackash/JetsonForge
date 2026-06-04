@@ -955,40 +955,6 @@ curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/sendMessage" \
 
 ---
 
-### SDK Manager Installation Failures
-
-**Problem:** "Invalid archive signature" or "Could not read meta data from /tmp/sdkmanager.deb"
-
-**Cause:** The SDK Manager .deb download was corrupted or incomplete.
-
-**Solution:**
-The action now includes automatic retry logic with integrity verification. If you still encounter this:
-
-1. **Re-run the workflow** - The action will retry up to 3 times automatically
-2. **Check network connectivity:**
-   ```bash
-   curl -I https://developer.nvidia.com
-   ```
-3. **Verify runner has access to NVIDIA servers** (corporate firewalls may block)
-4. **Use a self-hosted runner** if GitHub-hosted runners have network issues
-5. **Manual installation workaround** (for self-hosted runners):
-   ```yaml
-   - name: Pre-install SDK Manager
-     run: |
-       wget https://developer.nvidia.com/downloads/sdkmanager/secure/clients/sdkmanager_2.2.0-11976_amd64.deb
-       sudo dpkg -i sdkmanager_2.2.0-11976_amd64.deb
-       sudo apt-get install -f -y
-   ```
-
-**What the action does automatically:**
-- ✅ Retries download up to 3 times with exponential backoff
-- ✅ Verifies file size (must be >50MB)
-- ✅ Validates it's a proper Debian package
-- ✅ Fixes missing dependencies automatically
-- ✅ Provides detailed error messages
-
----
-
 ### Disk Space Issues
 
 **Problem:** "No space left on device"
