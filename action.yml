@@ -406,7 +406,18 @@ runs:
         fi
         
         echo ""
+        echo "=========================================="
         echo "Executing SDK Manager download..."
+        echo "=========================================="
+        echo "Command parameters:"
+        echo "  Version: $JP_VERSION"
+        echo "  Target: ${{ inputs.jetson_target }}"
+        echo "  Download folder: $DOWNLOAD_FOLDER"
+        echo "  Archived versions flag: $ARCHIVED_FLAG"
+        echo ""
+        
+        # Enable command tracing for visibility
+        set -x
         
         # Build the command dynamically
         sdkmanager --cli \
@@ -421,6 +432,9 @@ runs:
           --host \
           --target "${{ inputs.jetson_target }}" \
           $ARCHIVED_FLAG
+        
+        # Disable command tracing
+        set +x
         
         echo ""
         echo "Download complete. Files saved to: $DOWNLOAD_FOLDER"
