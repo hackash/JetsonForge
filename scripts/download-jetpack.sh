@@ -66,7 +66,7 @@ trap "rm -f '$DL_LOG' '$DL_STATUS'" EXIT
     --target-os Linux \
     --host \
     --check-for-updates false \
-    --query non-interactive \  
+    --query non-interactive \
     --target "$JETSON_TARGET" \
     $ARCHIVED_FLAG 2>&1 | tee "$DL_LOG"
   echo "${PIPESTATUS[0]}" > "$DL_STATUS"
