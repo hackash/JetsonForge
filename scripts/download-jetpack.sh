@@ -146,6 +146,7 @@ SDKM_CMD=(
   --version "$JP_VERSION"
   --target-os Linux
   --check-for-updates false
+  --stay-logged-in true
   --target "$JETSON_TARGET"
 )
 
