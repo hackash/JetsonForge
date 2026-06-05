@@ -16,8 +16,8 @@ echo "::group::Downloading JetPack $JP_VERSION"
 echo "Downloading JetPack $JP_VERSION for $JETSON_TARGET..."
 echo "Download location: $DOWNLOAD_FOLDER"
 echo ""
-echo "ℹ️  For version compatibility, see: https://github.com/hackash/JetsonForge/blob/main/JETPACK-VERSIONS.md"
-echo ""
+
+mkdir -p "$DOWNLOAD_FOLDER"
 
 # ------------------------------------------------------------------
 # Determine --archived-versions flag
@@ -39,96 +39,173 @@ else
   fi
 fi
 
-echo ""
-echo "Executing SDK Manager download (monitoring output for authentication prompts)..."
-
-# ------------------------------------------------------------------
-# Run sdkmanager in background, tee output to a log file so we can
-# detect a login URL and send notifications while the process runs.
-# set +e / +o pipefail inside the subshell ensures we always capture
-# the real exit code regardless of sdkmanager's exit status.
-# ------------------------------------------------------------------
-DL_LOG=$(mktemp)
-DL_STATUS=$(mktemp)
+DL_LOG="$(mktemp)"
+DL_STATUS="$(mktemp)"
 trap "rm -f '$DL_LOG' '$DL_STATUS'" EXIT
+
+html_escape() {
+  python3 -c 'import html, sys; print(html.escape(sys.stdin.read()))'
+}
+
+extract_login_url() {
+  grep -Eo 'https://static-login\.nvidia\.com/service/default/pin\?user_code=[0-9]+' "$DL_LOG" 2>/dev/null \
+    | tail -1 || true
+}
+
+extract_qr_block() {
+  awk '
+    /Scan QR code:/ {
+      capture=1
+      next
+    }
+
+    /SDK Manager will start once login is completed/ {
+      exit
+    }
+
+    capture {
+      print
+    }
+  ' "$DL_LOG" 2>/dev/null || true
+}
+
+auth_screen_ready() {
+  grep -q "SDK Manager will start once login is completed" "$DL_LOG" 2>/dev/null
+}
+
+send_telegram_auth() {
+  local login_url="$1"
+  local qr_block="$2"
+
+  if [[ -z "$TELEGRAM_BOT_TOKEN" || -z "$TELEGRAM_CHAT_ID" ]]; then
+    echo "[INFO] Telegram credentials not set, skipping Telegram notification"
+    return 0
+  fi
+
+  local escaped_qr
+  escaped_qr="$(printf '%s' "$qr_block" | html_escape)"
+
+  local message
+  message="🔐 <b>NVIDIA SDK Manager Authentication Required</b>
+
+Open this link:
+
+${login_url}
+
+Or scan this QR code:
+
+<pre>${escaped_qr}</pre>
+
+SDK Manager will continue automatically after login."
+
+  curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+    --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+    --data-urlencode "text=${message}" \
+    --data-urlencode "parse_mode=HTML" \
+    --data-urlencode "disable_web_page_preview=false" \
+    >/dev/null || true
+}
+
+send_slack_auth() {
+  local login_url="$1"
+
+  if [[ -z "$SLACK_WEBHOOK_URL" ]]; then
+    return 0
+  fi
+
+  curl -s -X POST -H 'Content-Type: application/json' \
+    --data "{\"text\":\"🔐 NVIDIA SDK Manager Authentication Required: ${login_url}\"}" \
+    "$SLACK_WEBHOOK_URL" >/dev/null || true
+}
+
+send_teams_auth() {
+  local login_url="$1"
+
+  if [[ -z "$TEAMS_WEBHOOK_URL" ]]; then
+    return 0
+  fi
+
+  curl -s -X POST -H 'Content-Type: application/json' \
+    --data "{\"@type\":\"MessageCard\",\"@context\":\"https://schema.org/extensions\",\"themeColor\":\"76B900\",\"title\":\"NVIDIA SDK Manager Authentication Required\",\"text\":\"Authenticate here: ${login_url}\"}" \
+    "$TEAMS_WEBHOOK_URL" >/dev/null || true
+}
+
+echo ""
+echo "Executing SDK Manager download and monitoring authentication output..."
+
+SDKM_CMD=(
+  sdkmanager
+  --cli
+  --action downloadonly
+  --download-folder "$DOWNLOAD_FOLDER"
+  --login-type devzone
+  --exit-on-finish
+  --license accept
+  --product Jetson
+  --version "$JP_VERSION"
+  --target-os Linux
+  --host
+  --check-for-updates false
+  --query non-interactive
+  --target "$JETSON_TARGET"
+)
+
+if [[ -n "$ARCHIVED_FLAG" ]]; then
+  SDKM_CMD+=("$ARCHIVED_FLAG")
+fi
 
 (
   set +e
   set +o pipefail
-  sdkmanager --cli \
-    --action downloadonly \
-    --download-folder "$DOWNLOAD_FOLDER" \
-    --login-type devzone \
-    --exit-on-finish \
-    --license accept \
-    --product Jetson \
-    --version "$JP_VERSION" \
-    --target-os Linux \
-    --host \
-    --check-for-updates false \
-    --query non-interactive \
-    --target "$JETSON_TARGET" \
-    $ARCHIVED_FLAG 2>&1 | tee "$DL_LOG"
-  echo "${PIPESTATUS[0]}" > "$DL_STATUS"
+
+  # Important:
+  # `script` gives SDK Manager a pseudo-terminal.
+  # This helps preserve the QR/login screen exactly as SDK Manager prints it.
+  if command -v script >/dev/null 2>&1; then
+    CMD_STR="$(printf ' %q' "${SDKM_CMD[@]}")"
+    script -q -e -c "$CMD_STR" /dev/null 2>&1 | tee "$DL_LOG"
+    echo "${PIPESTATUS[0]}" > "$DL_STATUS"
+  else
+    "${SDKM_CMD[@]}" 2>&1 | tee "$DL_LOG"
+    echo "${PIPESTATUS[0]}" > "$DL_STATUS"
+  fi
 ) &
+
 DL_BG_PID=$!
 
 NOTIFIED=false
 ELAPSED=0
-MAX_WAIT=7200   # 2-hour ceiling for large JetPack downloads
+MAX_WAIT=7200
 
 while kill -0 "$DL_BG_PID" 2>/dev/null; do
   if [[ "$NOTIFIED" == "false" ]]; then
-    LOGIN_URL=$(grep -oP \
-      'https://static\.nvidia\.com/sdk-manager/login\.html\?code=[^[:space:]"]+' \
-      "$DL_LOG" 2>/dev/null | head -1 || true)
-    # Fallback pattern in case the URL format changes
-    [[ -z "$LOGIN_URL" ]] && LOGIN_URL=$(grep -oP \
-      'https://[^[:space:]]*login[^[:space:]]*\?code=[^[:space:]"]+' \
-      "$DL_LOG" 2>/dev/null | head -1 || true)
+    LOGIN_URL="$(extract_login_url)"
 
-    if [[ -n "$LOGIN_URL" ]]; then
+    if [[ -n "$LOGIN_URL" ]] && auth_screen_ready; then
+      QR_BLOCK="$(extract_qr_block)"
+
       NOTIFIED=true
+
       echo ""
       echo "=========================================="
       echo "AUTHENTICATION REQUIRED"
       echo "Please open this URL in your browser:"
       echo "  $LOGIN_URL"
+      echo ""
+      echo "QR code captured from SDK Manager output."
       echo "=========================================="
+      echo ""
 
-      # Telegram
-      if [[ -n "$TELEGRAM_BOT_TOKEN" ]] && [[ -n "$TELEGRAM_CHAT_ID" ]]; then
-        TGRAM_MSG="🔐 NVIDIA SDK Manager authentication required for JetsonForge download.
-
-Please authenticate to continue:
-${LOGIN_URL}
-
-Timeout: ${AUTH_TIMEOUT}s"
-        ENCODED=$(echo -n "$TGRAM_MSG" | jq -sRr @uri)
-        curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-          -d "chat_id=${TELEGRAM_CHAT_ID}&text=${ENCODED}&disable_web_page_preview=false" \
-          > /dev/null || true
-      fi
-
-      # Slack
-      if [[ -n "$SLACK_WEBHOOK_URL" ]]; then
-        curl -s -X POST -H 'Content-Type: application/json' \
-          --data "{\"blocks\":[{\"type\":\"section\",\"text\":{\"type\":\"mrkdwn\",\"text\":\"🔐 *NVIDIA SDK Manager Authentication Required*\nJetsonForge download is waiting. <${LOGIN_URL}|🔗 Authenticate here>\"}}]}" \
-          "$SLACK_WEBHOOK_URL" > /dev/null || true
-      fi
-
-      # Teams
-      if [[ -n "$TEAMS_WEBHOOK_URL" ]]; then
-        curl -s -X POST -H 'Content-Type: application/json' \
-          --data "{\"@type\":\"MessageCard\",\"@context\":\"https://schema.org/extensions\",\"themeColor\":\"76B900\",\"title\":\"🔐 NVIDIA SDK Manager Authentication Required\",\"text\":\"JetsonForge download is waiting. [Authenticate here](${LOGIN_URL})\"}" \
-          "$TEAMS_WEBHOOK_URL" > /dev/null || true
-      fi
+      send_telegram_auth "$LOGIN_URL" "$QR_BLOCK"
+      send_slack_auth "$LOGIN_URL"
+      send_teams_auth "$LOGIN_URL"
     fi
   fi
 
-  sleep 10
-  ELAPSED=$((ELAPSED + 10))
-  if [[ $ELAPSED -ge $MAX_WAIT ]]; then
+  sleep 5
+  ELAPSED=$((ELAPSED + 5))
+
+  if [[ "$ELAPSED" -ge "$MAX_WAIT" ]]; then
     echo "::error::Download timed out after ${MAX_WAIT}s"
     kill "$DL_BG_PID" 2>/dev/null || true
     exit 1
@@ -136,11 +213,22 @@ Timeout: ${AUTH_TIMEOUT}s"
 done
 
 wait "$DL_BG_PID" || true
-DL_EXIT=$(cat "$DL_STATUS" 2>/dev/null || echo "1")
+DL_EXIT="$(cat "$DL_STATUS" 2>/dev/null || echo "1")"
 
 if [[ "$DL_EXIT" != "0" ]]; then
   echo "::error::SDK Manager download failed with exit code $DL_EXIT"
+  tail -120 "$DL_LOG" || true
   exit "$DL_EXIT"
+fi
+
+# Important safety check:
+# SDK Manager may exit 0 in some bad cases, so verify download folder is not empty.
+if ! find "$DOWNLOAD_FOLDER" -type f -size +1k | grep -q .; then
+  echo "::error::SDK Manager exited with code 0, but no downloaded files were found."
+  echo ""
+  echo "Last SDK Manager output:"
+  tail -120 "$DL_LOG" || true
+  exit 1
 fi
 
 echo ""
