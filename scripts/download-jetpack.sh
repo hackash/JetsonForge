@@ -145,7 +145,6 @@ SDKM_CMD=(
   --product Jetson
   --version "$JP_VERSION"
   --target-os Linux
-  --host
   --check-for-updates false
   --target "$JETSON_TARGET"
 )
